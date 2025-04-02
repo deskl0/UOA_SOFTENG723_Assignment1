@@ -151,7 +151,7 @@ static void vManualOverrideTask(void *pvParameters);
 static void vKeyboardISRHandler(void* context);
 static void vSystemResetISRHandler(void* context);
 static void vFrequencyISRHandler(void* context);
-//static void vShedISRHandler(void* context);
+static void vShedISRHandler(void* context);
 static void vFailSafeISRHandler(void* context);
 
 static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision);
@@ -235,21 +235,19 @@ static void vFrequencyISRHandler(void* context) {
 }
 
 // DEPRECATED. Reason: We need a writer for makeLoadDecision function to maintain SRP.
-// Unnecessary to create an INT. Not a periodic task
-
+// Unnecessary to create an INT
 //  load decison should call this ISR when new decison has been made
 /* Shedding ISR Handler */
 /*
 static void vShedISRHandler(void* context) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
+    /* Set the shedding flag or directly update load parameters */
     gSystemStatus.alert_active = 1;
 
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 */
-
-
 // TODO failsafe ISR should be called immediately once system failure detected
 /* Failsafe ISR Handler */
 static void vFailSafeISRHandler(void* context) {
@@ -391,26 +389,10 @@ static void vFrequencyAnalyzerTask(void *pvParameters) {
         }
     }
 }
-static void vWriteLoadDecision(LoadDecision_t *pxLoadDecision) {
-    /* Take mutex to protect access to shedding registers */
-    if (xSemaphoreTake(xShedRegsMutex, portMAX_DELAY) == pdTRUE) {
-        /* Apply the requested status to the actual load status */
-        pxLoadDecision->load_status = pxLoadDecision->requested_status;
-
-        /* Update the hardware outputs */
-        IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, pxLoadDecision->load_status);
-
-        /* Set alert flag to indicate a shedding operation occurred */
-        gSystemStatus.alert_active = 1;
-
-        xSemaphoreGive(xShedRegsMutex);
-    }
-}
 
 /* Load Decision Function */
 static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision) {
     uint16_t load_mask = LOAD_PRIORITY_MASK; // Default mask
-    uint16_t original_requested_status = pxLoadDecision->requested_status;
 
     /* Default is all loads off */
     pxLoadDecision->requested_status = 0x0000;
@@ -464,11 +446,6 @@ static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoa
     if (gSystemStatus.failsafe_active) {
         /* Only keep critical load (bit 0) */
         pxLoadDecision->requested_status = 0x0001;
-    }
-
-    /* If the decision has changed, write it to hardware */
-    if (pxLoadDecision->requested_status != original_requested_status) {
-        vWriteLoadDecision(pxLoadDecision);
     }
 }
 

@@ -151,7 +151,7 @@ static void vManualOverrideTask(void *pvParameters);
 static void vKeyboardISRHandler(void* context);
 static void vSystemResetISRHandler(void* context);
 static void vFrequencyISRHandler(void* context);
-//static void vShedISRHandler(void* context);
+static void vShedISRHandler(void* context);
 static void vFailSafeISRHandler(void* context);
 
 static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision);
@@ -234,21 +234,16 @@ static void vFrequencyISRHandler(void* context) {
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-// DEPRECATED. Reason: We need a writer for makeLoadDecision function to maintain SRP.
-// Unnecessary to create an INT. Not a periodic task
-
-//  load decison should call this ISR when new decison has been made
+// TODO load decison should call this ISR when new decison has been made
 /* Shedding ISR Handler */
-/*
 static void vShedISRHandler(void* context) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
+    /* Set the shedding flag or directly update load parameters */
     gSystemStatus.alert_active = 1;
 
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
-*/
-
 
 // TODO failsafe ISR should be called immediately once system failure detected
 /* Failsafe ISR Handler */
@@ -391,29 +386,13 @@ static void vFrequencyAnalyzerTask(void *pvParameters) {
         }
     }
 }
-static void vWriteLoadDecision(LoadDecision_t *pxLoadDecision) {
-    /* Take mutex to protect access to shedding registers */
-    if (xSemaphoreTake(xShedRegsMutex, portMAX_DELAY) == pdTRUE) {
-        /* Apply the requested status to the actual load status */
-        pxLoadDecision->load_status = pxLoadDecision->requested_status;
-
-        /* Update the hardware outputs */
-        IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, pxLoadDecision->load_status);
-
-        /* Set alert flag to indicate a shedding operation occurred */
-        gSystemStatus.alert_active = 1;
-
-        xSemaphoreGive(xShedRegsMutex);
-    }
-}
 
 /* Load Decision Function */
+/* Modified Load Decision Function */
 static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision) {
     uint16_t load_mask = LOAD_PRIORITY_MASK; // Default mask
-    uint16_t original_requested_status = pxLoadDecision->requested_status;
-
-    /* Default is all loads off */
-    pxLoadDecision->requested_status = 0x0000;
+    uint16_t new_requested_status = 0x0000;
+    uint8_t decision_changed = 0;
 
     /* Check if frequency is below acceptable limits */
     if (!pxFreqData->is_stable) {
@@ -444,31 +423,36 @@ static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoa
 
         /* Apply loads based on priority mapping */
         if (load_mask & LOAD_PRIORITY_1) {
-            pxLoadDecision->requested_status |= 0x0001;  // Load 0 is critical
+            new_requested_status |= 0x0001;  // Load 0 is critical
         }
 
         if (load_mask & LOAD_PRIORITY_2) {
-            pxLoadDecision->requested_status |= 0x0006;  // Loads 1-2 are high priority (bits 1-2)
+            new_requested_status |= 0x0006;  // Loads 1-2 are high priority (bits 1-2)
         }
 
         if (load_mask & LOAD_PRIORITY_3) {
-            pxLoadDecision->requested_status |= 0x0018;  // Loads 3-4 are medium priority (bits 3-4)
+            new_requested_status |= 0x0018;  // Loads 3-4 are medium priority (bits 3-4)
         }
 
         if (load_mask & LOAD_PRIORITY_4) {
-            pxLoadDecision->requested_status |= 0x0060;  // Loads 5-6 are low priority (bits 5-6)
+            new_requested_status |= 0x0060;  // Loads 5-6 are low priority (bits 5-6)
         }
     }
 
     /* Override with failsafe settings if active */
     if (gSystemStatus.failsafe_active) {
         /* Only keep critical load (bit 0) */
-        pxLoadDecision->requested_status = 0x0001;
+        new_requested_status = 0x0001;
     }
 
-    /* If the decision has changed, write it to hardware */
-    if (pxLoadDecision->requested_status != original_requested_status) {
-        vWriteLoadDecision(pxLoadDecision);
+    /* Check if new decision is different from current state */
+    if (new_requested_status != pxLoadDecision->requested_status) {
+        /* Update the requested status */
+        pxLoadDecision->requested_status = new_requested_status;
+
+        /* Trigger the shedding interrupt */
+        IOWR_ALTERA_AVALON_PIO_DATA(LOAD_SHED_TRIGGER_BASE, 0x1);  // Set to trigger interrupt
+        IOWR_ALTERA_AVALON_PIO_DATA(LOAD_SHED_TRIGGER_BASE, 0x0);  // Clear after triggering
     }
 }
 

@@ -151,7 +151,7 @@ static void vManualOverrideTask(void *pvParameters);
 static void vKeyboardISRHandler(void* context);
 static void vSystemResetISRHandler(void* context);
 static void vFrequencyISRHandler(void* context);
-//static void vShedISRHandler(void* context);
+static void vShedISRHandler(void* context);
 static void vFailSafeISRHandler(void* context);
 
 static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision);
@@ -389,21 +389,6 @@ static void vFrequencyAnalyzerTask(void *pvParameters) {
             /* Send to results queue for other tasks */
             xQueueSend(xFreqResultQueue, &local_freq_data, 0);
         }
-    }
-}
-static void vWriteLoadDecision(LoadDecision_t *pxLoadDecision) {
-    /* Take mutex to protect access to shedding registers */
-    if (xSemaphoreTake(xShedRegsMutex, portMAX_DELAY) == pdTRUE) {
-        /* Apply the requested status to the actual load status */
-        pxLoadDecision->load_status = pxLoadDecision->requested_status;
-
-        /* Update the hardware outputs */
-        IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, pxLoadDecision->load_status);
-
-        /* Set alert flag to indicate a shedding operation occurred */
-        gSystemStatus.alert_active = 1;
-
-        xSemaphoreGive(xShedRegsMutex);
     }
 }
 

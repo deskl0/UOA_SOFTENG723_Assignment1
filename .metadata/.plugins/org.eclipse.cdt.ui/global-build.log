@@ -2409,3 +2409,132 @@ Info:                 130560 KBytes free for stack + heap.
 Info: Creating FreqRelay.objdump
 nios2-elf-objdump --disassemble --syms --all-header --source FreqRelay.elf >FreqRelay.objdump
 [FreqRelay build complete]
+01:21:06 **** Incremental Build of configuration Nios II for project FreqRelay_bsp ****
+make all 
+[BSP build complete]
+01:21:07 **** Incremental Build of configuration Nios II for project FreqRelay ****
+make all 
+Info: Building ../FreqRelay_bsp
+D:/ALTERA/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../FreqRelay_bsp
+[BSP build complete]
+Info: Compiling hello_freqRelay.c to obj/default/hello_freqRelay.o
+nios2-elf-gcc -xc -MP -MMD -c -I../FreqRelay_bsp/HAL/inc -I../FreqRelay_bsp -I../FreqRelay_bsp/drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mhw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/hello_freqRelay.o hello_freqRelay.c
+hello_freqRelay.c: In function 'vKeyboardISRHandler':
+hello_freqRelay.c:168:13: warning: variable 'key_value' set but not used [-Wunused-but-set-variable]
+     uint8_t key_value;
+             ^
+hello_freqRelay.c: In function 'vFrequencyAnalyzerTask':
+hello_freqRelay.c:381:42: warning: implicit declaration of function 'fabs' [-Wimplicit-function-declaration]
+                                          fabs(local_freq_data.roc) < MAX_FREQ_ROC);
+                                          ^
+hello_freqRelay.c:381:42: warning: incompatible implicit declaration of built-in function 'fabs'
+hello_freqRelay.c:381:42: note: include '<math.h>' or provide a declaration of 'fabs'
+hello_freqRelay.c: In function 'vMakeLoadDecision':
+hello_freqRelay.c:440:13: warning: incompatible implicit declaration of built-in function 'fabs'
+         if (fabs(pxFreqData->roc) > MAX_FREQ_ROC) {
+             ^
+hello_freqRelay.c:440:13: note: include '<math.h>' or provide a declaration of 'fabs'
+hello_freqRelay.c: In function 'main':
+hello_freqRelay.c:761:45: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+     alt_irq_register(PUSH_BUTTON_IRQ, NULL, vKeyboardISRHandler);
+                                             ^
+In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
+                 from freertos/portmacro.h:77,
+                 from freertos/portable.h:95,
+                 from freertos/FreeRTOS.h:104,
+                 from hello_freqRelay.c:13:
+../FreqRelay_bsp/HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void *)'
+ extern int alt_irq_register (alt_u32 id, 
+            ^
+hello_freqRelay.c:764:52: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+     alt_irq_register(FREQUENCY_ANALYSER_IRQ, NULL, vFrequencyISRHandler);
+                                                    ^
+In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
+                 from freertos/portmacro.h:77,
+                 from freertos/portable.h:95,
+                 from freertos/FreeRTOS.h:104,
+                 from hello_freqRelay.c:13:
+../FreqRelay_bsp/HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void *)'
+ extern int alt_irq_register (alt_u32 id, 
+            ^
+hello_freqRelay.c: At top level:
+hello_freqRelay.c:189:13: warning: 'vSystemResetISRHandler' defined but not used [-Wunused-function]
+ static void vSystemResetISRHandler(void* context) {
+             ^
+hello_freqRelay.c:154:13: warning: 'vShedISRHandler' declared 'static' but never defined [-Wunused-function]
+ static void vShedISRHandler(void* context);
+             ^
+hello_freqRelay.c:255:13: warning: 'vFailSafeISRHandler' defined but not used [-Wunused-function]
+ static void vFailSafeISRHandler(void* context) {
+             ^
+Info: Linking FreqRelay.elf
+nios2-elf-g++  -T'../FreqRelay_bsp/linker.x' -msys-crt0='../FreqRelay_bsp/obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../FreqRelay_bsp   -Wl,-Map=FreqRelay.map   -O0 -g -Wall   -mhw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o FreqRelay.elf obj/default/FreeRTOS/croutine.o obj/default/FreeRTOS/event_groups.o obj/default/FreeRTOS/heap.o obj/default/FreeRTOS/list.o obj/default/FreeRTOS/port.o obj/default/FreeRTOS/queue.o obj/default/FreeRTOS/tasks.o obj/default/FreeRTOS/timers.o obj/default/hello_freqRelay.o obj/default/FreeRTOS/port_asm.o -lm -msys-lib=m
+nios2-elf-insert FreqRelay.elf --thread_model hal --cpu_name nios2 --qsys true --simulation_enabled false --id 7 --sidp 0x430f0 --timestamp 1393900972 --stderr_dev jtag_uart --stdin_dev jtag_uart --stdout_dev jtag_uart --sopc_system_name nios2 --quartus_project_dir "D:/FreqRelay_v1" --sopcinfo D:/FreqRelay_v1/software/FreqRelay_bsp/../../nios2.sopcinfo
+Info: (FreqRelay.elf) 633 KBytes program size (code + initialized data).
+Info:                 130560 KBytes free for stack + heap.
+Info: Creating FreqRelay.objdump
+nios2-elf-objdump --disassemble --syms --all-header --source FreqRelay.elf >FreqRelay.objdump
+[FreqRelay build complete]
+01:26:57 **** Incremental Build of configuration Nios II for project FreqRelay_bsp ****
+make all 
+[BSP build complete]
+01:26:58 **** Incremental Build of configuration Nios II for project FreqRelay ****
+make all 
+Info: Building ../FreqRelay_bsp
+D:/ALTERA/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../FreqRelay_bsp
+[BSP build complete]
+Info: Compiling hello_freqRelay.c to obj/default/hello_freqRelay.o
+nios2-elf-gcc -xc -MP -MMD -c -I../FreqRelay_bsp/HAL/inc -I../FreqRelay_bsp -I../FreqRelay_bsp/drivers/inc  -pipe -D__hal__ -DALT_NO_INSTRUCTION_EMULATION -DALT_SINGLE_THREADED    -O0 -g -Wall   -mhw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o obj/default/hello_freqRelay.o hello_freqRelay.c
+hello_freqRelay.c: In function 'vKeyboardISRHandler':
+hello_freqRelay.c:168:13: warning: variable 'key_value' set but not used [-Wunused-but-set-variable]
+     uint8_t key_value;
+             ^
+hello_freqRelay.c: In function 'vFrequencyAnalyzerTask':
+hello_freqRelay.c:381:42: warning: implicit declaration of function 'fabs' [-Wimplicit-function-declaration]
+                                          fabs(local_freq_data.roc) < MAX_FREQ_ROC);
+                                          ^
+hello_freqRelay.c:381:42: warning: incompatible implicit declaration of built-in function 'fabs'
+hello_freqRelay.c:381:42: note: include '<math.h>' or provide a declaration of 'fabs'
+hello_freqRelay.c: In function 'vMakeLoadDecision':
+hello_freqRelay.c:440:13: warning: incompatible implicit declaration of built-in function 'fabs'
+         if (fabs(pxFreqData->roc) > MAX_FREQ_ROC) {
+             ^
+hello_freqRelay.c:440:13: note: include '<math.h>' or provide a declaration of 'fabs'
+hello_freqRelay.c: In function 'main':
+hello_freqRelay.c:761:45: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+     alt_irq_register(PUSH_BUTTON_IRQ, NULL, vKeyboardISRHandler);
+                                             ^
+In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
+                 from freertos/portmacro.h:77,
+                 from freertos/portable.h:95,
+                 from freertos/FreeRTOS.h:104,
+                 from hello_freqRelay.c:13:
+../FreqRelay_bsp/HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void *)'
+ extern int alt_irq_register (alt_u32 id, 
+            ^
+hello_freqRelay.c:764:52: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+     alt_irq_register(FREQUENCY_ANALYSER_IRQ, NULL, vFrequencyISRHandler);
+                                                    ^
+In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
+                 from freertos/portmacro.h:77,
+                 from freertos/portable.h:95,
+                 from freertos/FreeRTOS.h:104,
+                 from hello_freqRelay.c:13:
+../FreqRelay_bsp/HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void *)'
+ extern int alt_irq_register (alt_u32 id, 
+            ^
+hello_freqRelay.c: At top level:
+hello_freqRelay.c:189:13: warning: 'vSystemResetISRHandler' defined but not used [-Wunused-function]
+ static void vSystemResetISRHandler(void* context) {
+             ^
+hello_freqRelay.c:255:13: warning: 'vFailSafeISRHandler' defined but not used [-Wunused-function]
+ static void vFailSafeISRHandler(void* context) {
+             ^
+Info: Linking FreqRelay.elf
+nios2-elf-g++  -T'../FreqRelay_bsp/linker.x' -msys-crt0='../FreqRelay_bsp/obj/HAL/src/crt0.o' -msys-lib=hal_bsp -L../FreqRelay_bsp   -Wl,-Map=FreqRelay.map   -O0 -g -Wall   -mhw-div -mhw-mul -mno-hw-mulx -mgpopt=global  -o FreqRelay.elf obj/default/FreeRTOS/croutine.o obj/default/FreeRTOS/event_groups.o obj/default/FreeRTOS/heap.o obj/default/FreeRTOS/list.o obj/default/FreeRTOS/port.o obj/default/FreeRTOS/queue.o obj/default/FreeRTOS/tasks.o obj/default/FreeRTOS/timers.o obj/default/hello_freqRelay.o obj/default/FreeRTOS/port_asm.o -lm -msys-lib=m
+nios2-elf-insert FreqRelay.elf --thread_model hal --cpu_name nios2 --qsys true --simulation_enabled false --id 7 --sidp 0x430f0 --timestamp 1393900972 --stderr_dev jtag_uart --stdin_dev jtag_uart --stdout_dev jtag_uart --sopc_system_name nios2 --quartus_project_dir "D:/FreqRelay_v1" --sopcinfo D:/FreqRelay_v1/software/FreqRelay_bsp/../../nios2.sopcinfo
+Info: (FreqRelay.elf) 633 KBytes program size (code + initialized data).
+Info:                 130560 KBytes free for stack + heap.
+Info: Creating FreqRelay.objdump
+nios2-elf-objdump --disassemble --syms --all-header --source FreqRelay.elf >FreqRelay.objdump
+[FreqRelay build complete]

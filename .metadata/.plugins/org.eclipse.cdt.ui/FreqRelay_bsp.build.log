@@ -1,6 +1,6 @@
-14:58:23 **** Incremental Build of configuration Nios II for project FreqRelay_bsp ****
+01:26:57 **** Incremental Build of configuration Nios II for project FreqRelay_bsp ****
 make all 
 [BSP build complete]
 
-14:58:24 Build Finished (took 881ms)
+01:26:58 Build Finished (took 480ms)
 

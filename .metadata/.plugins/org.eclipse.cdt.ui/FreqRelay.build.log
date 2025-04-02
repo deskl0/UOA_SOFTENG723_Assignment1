@@ -1,4 +1,4 @@
-14:58:24 **** Incremental Build of configuration Nios II for project FreqRelay ****
+01:26:58 **** Incremental Build of configuration Nios II for project FreqRelay ****
 make all 
 Info: Building ../FreqRelay_bsp
 D:/ALTERA/nios2eds/bin/gnu/H-x86_64-mingw32/bin/make --no-print-directory -C ../FreqRelay_bsp
@@ -9,27 +9,19 @@ hello_freqRelay.c: In function 'vKeyboardISRHandler':
 hello_freqRelay.c:168:13: warning: variable 'key_value' set but not used [-Wunused-but-set-variable]
      uint8_t key_value;
              ^
-hello_freqRelay.c: In function 'vSystemResetISRHandler':
-hello_freqRelay.c:189:9: warning: unused variable 'i' [-Wunused-variable]
-     int i;
-         ^
 hello_freqRelay.c: In function 'vFrequencyAnalyzerTask':
-hello_freqRelay.c:372:42: warning: implicit declaration of function 'fabs' [-Wimplicit-function-declaration]
+hello_freqRelay.c:381:42: warning: implicit declaration of function 'fabs' [-Wimplicit-function-declaration]
                                           fabs(local_freq_data.roc) < MAX_FREQ_ROC);
                                           ^
-hello_freqRelay.c:372:42: warning: incompatible implicit declaration of built-in function 'fabs'
-hello_freqRelay.c:372:42: note: include '<math.h>' or provide a declaration of 'fabs'
+hello_freqRelay.c:381:42: warning: incompatible implicit declaration of built-in function 'fabs'
+hello_freqRelay.c:381:42: note: include '<math.h>' or provide a declaration of 'fabs'
 hello_freqRelay.c: In function 'vMakeLoadDecision':
-hello_freqRelay.c:415:13: warning: incompatible implicit declaration of built-in function 'fabs'
+hello_freqRelay.c:440:13: warning: incompatible implicit declaration of built-in function 'fabs'
          if (fabs(pxFreqData->roc) > MAX_FREQ_ROC) {
              ^
-hello_freqRelay.c:415:13: note: include '<math.h>' or provide a declaration of 'fabs'
-hello_freqRelay.c: In function 'vDrawFrequencyPlot':
-hello_freqRelay.c:578:9: warning: unused variable 'k' [-Wunused-variable]
-     int k;
-         ^
+hello_freqRelay.c:440:13: note: include '<math.h>' or provide a declaration of 'fabs'
 hello_freqRelay.c: In function 'main':
-hello_freqRelay.c:731:45: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+hello_freqRelay.c:761:45: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
      alt_irq_register(PUSH_BUTTON_IRQ, NULL, vKeyboardISRHandler);
                                              ^
 In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
@@ -40,7 +32,7 @@ In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
 ../FreqRelay_bsp/HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void *)'
  extern int alt_irq_register (alt_u32 id, 
             ^
-hello_freqRelay.c:734:52: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
+hello_freqRelay.c:764:52: warning: passing argument 3 of 'alt_irq_register' from incompatible pointer type [-Wincompatible-pointer-types]
      alt_irq_register(FREQUENCY_ANALYSER_IRQ, NULL, vFrequencyISRHandler);
                                                     ^
 In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
@@ -51,17 +43,11 @@ In file included from ../FreqRelay_bsp/HAL/inc/sys/alt_irq.h:218:0,
 ../FreqRelay_bsp/HAL/inc/priv/alt_legacy_irq.h:61:12: note: expected 'alt_isr_func {aka void (*)(void *, long unsigned int)}' but argument is of type 'void (*)(void *)'
  extern int alt_irq_register (alt_u32 id, 
             ^
-hello_freqRelay.c:724:9: warning: unused variable 'i' [-Wunused-variable]
-     int i;
-         ^
 hello_freqRelay.c: At top level:
-hello_freqRelay.c:187:13: warning: 'vSystemResetISRHandler' defined but not used [-Wunused-function]
+hello_freqRelay.c:189:13: warning: 'vSystemResetISRHandler' defined but not used [-Wunused-function]
  static void vSystemResetISRHandler(void* context) {
              ^
-hello_freqRelay.c:236:13: warning: 'vShedISRHandler' defined but not used [-Wunused-function]
- static void vShedISRHandler(void* context) {
-             ^
-hello_freqRelay.c:246:13: warning: 'vFailSafeISRHandler' defined but not used [-Wunused-function]
+hello_freqRelay.c:255:13: warning: 'vFailSafeISRHandler' defined but not used [-Wunused-function]
  static void vFailSafeISRHandler(void* context) {
              ^
 Info: Linking FreqRelay.elf
@@ -73,5 +59,5 @@ Info: Creating FreqRelay.objdump
 nios2-elf-objdump --disassemble --syms --all-header --source FreqRelay.elf >FreqRelay.objdump
 [FreqRelay build complete]
 
-14:58:26 Build Finished (took 2s.596ms)
+01:26:59 Build Finished (took 1s.495ms)
 
