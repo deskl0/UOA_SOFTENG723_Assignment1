@@ -1,0 +1,822 @@
+/**
+ * Load Management System for DE2-115 with FreeRTOS and NIOS II
+ *
+ * This implementation follows the system architecture diagram provided
+ * with multiple tasks and ISRs for frequency monitoring and load shedding.
+ */
+
+/* Standard includes */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+/* FreeRTOS includes */
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+#include "freertos/timers.h"
+#include "freertos/portmacro.h"
+
+/* Hardware includes */
+#include "system.h"
+#include "sys/alt_irq.h"
+#include "io.h"
+#include "altera_avalon_pio_regs.h"
+#include "altera_up_avalon_video_character_buffer_with_dma.h"
+#include "altera_up_avalon_video_pixel_buffer_dma.h"
+
+/* Task Priorities */
+#define SYSTEM_MONITOR_PRIORITY        14  // Highest priority
+#define FREQ_ANALYZER_PRIORITY         13
+#define LOAD_DECISION_PRIORITY         12
+#define LOAD_ACTUATOR_PRIORITY         10
+#define VGA_DISPLAY_PRIORITY           8
+#define MANUAL_OVERRIDE_PRIORITY       6   // Lowest priority
+
+/* Task Stack Sizes */
+#define TASK_STACKSIZE                 2048
+
+/* Task periods */
+#define SYSTEM_MONITOR_PERIOD_MS       100
+#define FREQ_ANALYZER_PERIOD_MS        50
+#define LOAD_ACTUATOR_PERIOD_MS        100
+#define VGA_DISPLAY_PERIOD_MS          200
+#define MANUAL_OVERRIDE_PERIOD_MS      100
+
+/* Frequency related constants */
+#define SAMPLING_FREQ                  16000.0  // Sampling frequency in Hz
+#define MIN_FREQ                       45.0     // Minimum frequency to consider valid
+#define NOMINAL_FREQ                   50.0     // Nominal frequency (Hz)
+#define FREQ_TOLERANCE                 1.5      // Frequency tolerance (  Hz)
+#define MAX_FREQ_ROC                   60.0     // Maximum rate of change (Hz/s)
+
+/* VGA Display Constants */
+#define FREQPLT_ORI_X                  101  // Origin X position for frequency plot
+#define FREQPLT_ORI_Y                  199.0  // Origin Y position for frequency plot
+#define FREQPLT_GRID_SIZE_X            5     // X-axis grid size
+#define FREQPLT_FREQ_RES               20.0  // Y-axis resolution (pixels per Hz)
+
+#define ROCPLT_ORI_X                   101   // Origin X position for RoC plot
+#define ROCPLT_ORI_Y                   259.0 // Origin Y position for RoC plot
+#define ROCPLT_GRID_SIZE_X             5     // X-axis grid size
+#define ROCPLT_ROC_RES                 0.5   // Y-axis resolution (pixels per Hz/s)
+
+/* Load Shedding Configuration */
+#define LOAD_PRIORITY_1                0x01  // Critical loads (never shed)
+#define LOAD_PRIORITY_2                0x02  // High priority loads
+#define LOAD_PRIORITY_3                0x04  // Medium priority loads
+#define LOAD_PRIORITY_4                0x08  // Low priority loads
+#define LOAD_PRIORITY_MASK             0x0F  // All loads mask
+
+/* Status Indicators */
+#define STATUS_NORMAL                  0
+#define STATUS_ALERT                   1
+#define STATUS_FAILSAFE                2
+
+/* System Fault Indicators */
+#define FAULT_NONE                     0
+#define FAULT_DETECTED                 1
+
+/* Shared data structures */
+typedef struct {
+    double current_freq;       // Current frequency in Hz
+    double prev_freq;          // Previous frequency reading
+    double roc;                // Rate of change (Hz/s)
+    double upper_limit;        // Upper frequency limit
+    double lower_limit;        // Lower frequency limit
+    int is_stable;             // Frequency stability flag
+} FrequencyData_t;
+
+typedef struct {
+    uint16_t load_status;      // (current status)16 bits, each bit represents a load 0- dis; 1-con
+    uint16_t requested_status; // (Requested status)Requested status after decision for each load
+    uint16_t priority_mask;    // Priority mask for load shedding
+} LoadDecision_t;
+
+typedef struct {
+	uint16_t actuator_status;  // 16 bits, each bit represents a load 0- dis; 1-con
+	uint16_t system_fault;     // Fault detection flag (0=normal, 1=fault detected)
+	uint16_t priority_mask;    // Priority mask matching the LoadDecision priority
+} Actuator_t;
+
+typedef struct {
+    uint8_t system_state;      // Overall system state
+    uint8_t alert_active;      // Alert flag
+    uint8_t failsafe_active;   // Failsafe flag
+    uint8_t override_active;   // Manual override flag
+} SystemStatus_t;
+
+/* Line structure for VGA drawing */
+typedef struct {
+    unsigned int x1;
+    unsigned int y1;
+    unsigned int x2;
+    unsigned int y2;
+} Line;
+
+/* Task handles */
+TaskHandle_t xSystemMonitorTask;
+TaskHandle_t xFreqAnalyzerTask;
+TaskHandle_t xLoadActuatorTask;
+TaskHandle_t xVGADisplayTask;
+TaskHandle_t xManualOverrideTask;
+
+/* Semaphores and mutex handles */
+SemaphoreHandle_t xConfigRegsMutex;    // Protects configuration registers
+SemaphoreHandle_t xActuatorStatusMutex; // Protects actuator status registers
+SemaphoreHandle_t xShedRegsMutex;      // Protects shedding registers
+
+/* Queue handles */
+QueueHandle_t xFreqDataQueue;          // Queue for frequency data
+QueueHandle_t xFreqResultQueue;        // Queue for frequency analysis results
+
+/* Global shared data - protected by mutex */
+FrequencyData_t gFrequencyData;
+LoadDecision_t gLoadDecision;
+Actuator_t gActuator;                  // New global actuator status
+SystemStatus_t gSystemStatus;
+
+/* VGA buffer handles */
+alt_up_pixel_buffer_dma_dev *pixel_buf;
+alt_up_char_buffer_dev *char_buf;
+
+/*-----------------------------------------------------------*/
+/* Function prototypes */
+static void vSystemMonitorTask(void *pvParameters);
+static void vFrequencyAnalyzerTask(void *pvParameters);
+static void vLoadActuatorTask(void *pvParameters);
+static void vVGADisplayTask(void *pvParameters);
+static void vManualOverrideTask(void *pvParameters);
+
+static void vKeyboardISRHandler(void* context);
+static void vSystemResetISRHandler(void* context);
+static void vFrequencyISRHandler(void* context);
+static void vShedISRHandler(void* context);
+static void vFailSafeISRHandler(void* context);
+
+static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision);
+static uint8_t vCheckActuatorStatus(LoadDecision_t *pxLoadDecision, Actuator_t *pxActuator);
+static void vInitializeVGA(void);
+static void vDrawFrequencyPlot(double *freq, double *dfreq, int oldest_idx);
+
+/*-----------------------------------------------------------*/
+/* ISR Handler Functions */
+
+/* Keyboard ISR Handler */
+static void vKeyboardISRHandler(void* context) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    uint8_t key_value;
+
+    /* Read keyboard data */
+    key_value = IORD_ALTERA_AVALON_PIO_DATA(PUSH_BUTTON_BASE);
+
+    /* Clear the interrupt */
+    IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
+
+    /* Process key value based on system state */
+    if (gSystemStatus.system_state == STATUS_NORMAL) {
+        /* Normal operation key handling */
+    } else if (gSystemStatus.system_state == STATUS_ALERT) {
+        /* Alert operation key handling */
+    }
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/* System Reset ISR Handler */
+static void vSystemResetISRHandler(void* context) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    int i;
+
+    /* Clear the interrupt */
+    IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
+
+    /* Reset system state */
+    gSystemStatus.system_state = STATUS_NORMAL;
+    gSystemStatus.alert_active = 0;
+    gSystemStatus.failsafe_active = 0;
+    gSystemStatus.override_active = 0;
+
+    /* Reset all loads to on */
+    if (xSemaphoreTakeFromISR(xActuatorStatusMutex, &xHigherPriorityTaskWoken) == pdTRUE) {
+        /* Reset load decision array for all 7 loads */
+        for (i = 0; i < 7; i++) {
+            gLoadDecision.load_status[i] = 1;      // All connected
+            gLoadDecision.requested_status[i] = 1; // All requested
+            gActuator.actuator_status[i] = 1;      // All actuators connected
+        }
+
+        /* Reset actuator fault status */
+        gActuator.system_fault = FAULT_NONE;
+
+        /* Reset priority masks */
+        gLoadDecision.priority_mask = LOAD_PRIORITY_MASK;
+        gActuator.priority_mask = LOAD_PRIORITY_MASK;
+
+        xSemaphoreGiveFromISR(xActuatorStatusMutex, &xHigherPriorityTaskWoken);
+    }
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/* Frequency ISR Handler */
+static void vFrequencyISRHandler(void* context) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    double freq;
+
+    /* Calculate frequency from the frequency analyzer hardware */
+    freq = SAMPLING_FREQ / (double)IORD(FREQUENCY_ANALYSER_BASE, 0);
+
+    /* Send frequency to the queue for processing */
+    xQueueSendToBackFromISR(xFreqDataQueue, &freq, &xHigherPriorityTaskWoken);
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/* Shedding ISR Handler */
+static void vShedISRHandler(void* context) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    /* Set the shedding flag or directly update load parameters */
+    gSystemStatus.alert_active = 1;
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/* Failsafe ISR Handler */
+static void vFailSafeISRHandler(void* context) {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    int i;
+
+    /* Immediately activate failsafe mode */
+    gSystemStatus.failsafe_active = 1;
+    gSystemStatus.system_state = STATUS_FAILSAFE;
+
+    /* Turn off non-critical loads immediately */
+    if (xSemaphoreTakeFromISR(xActuatorStatusMutex, &xHigherPriorityTaskWoken) == pdTRUE) {
+        /* Set all non-critical loads to disconnected */
+        for (i = 0; i < 7; i++) {
+            /* Keep only load 0 connected (critical) */
+            if (i == 0) {
+                gLoadDecision.load_status[i] = 1;
+                gLoadDecision.requested_status[i] = 1;
+            } else {
+                gLoadDecision.load_status[i] = 0;
+                gLoadDecision.requested_status[i] = 0;
+            }
+        }
+
+        /* Directly write to the load output - only critical loads (first load) */
+        IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, LOAD_PRIORITY_1);
+
+        xSemaphoreGiveFromISR(xActuatorStatusMutex, &xHigherPriorityTaskWoken);
+    }
+
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
+/*-----------------------------------------------------------*/
+/* Task Functions */
+
+/* System Monitor Task */
+static void vSystemMonitorTask(void *pvParameters) {
+    TickType_t xLastWakeTime;
+    int alert_count = 0;
+    uint8_t fault_status;
+
+    /* Initialize the xLastWakeTime variable with the current time */
+    xLastWakeTime = xTaskGetTickCount();
+
+    for (;;) {
+        /* Wait for the next cycle */
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(SYSTEM_MONITOR_PERIOD_MS));
+
+        /* Check for actuator faults by comparing requested vs actual status */
+        if (xSemaphoreTake(xActuatorStatusMutex, portMAX_DELAY) == pdTRUE) {
+            fault_status = vCheckActuatorStatus(&gLoadDecision, &gActuator);
+            gActuator.system_fault = fault_status;
+            xSemaphoreGive(xActuatorStatusMutex);
+
+            /* If fault detected, activate failsafe */
+            if (fault_status == FAULT_DETECTED) {
+                gSystemStatus.failsafe_active = 1;
+                gSystemStatus.system_state = STATUS_FAILSAFE;
+            }
+        }
+
+        /* Monitor system parameters */
+        if (xSemaphoreTake(xConfigRegsMutex, portMAX_DELAY) == pdTRUE) {
+            /* Check frequency stability */
+            if (!gFrequencyData.is_stable) {
+                alert_count++;
+            } else {
+                if (alert_count > 0) {
+                    alert_count--;
+                }
+            }
+
+            /* Update system state based on conditions */
+            if (gSystemStatus.failsafe_active) {
+                gSystemStatus.system_state = STATUS_FAILSAFE;
+            } else if (alert_count > 5) {
+                gSystemStatus.system_state = STATUS_ALERT;
+                gSystemStatus.alert_active = 1;
+            } else {
+                gSystemStatus.system_state = STATUS_NORMAL;
+                gSystemStatus.alert_active = 0;
+            }
+
+            xSemaphoreGive(xConfigRegsMutex);
+        }
+
+        /* Update LEDs to show system status */
+        if (gSystemStatus.system_state == STATUS_NORMAL) {
+            IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, 0x0000); // All off
+        } else if (gSystemStatus.system_state == STATUS_ALERT) {
+            IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, 0x5555); // Pattern
+        } else if (gSystemStatus.system_state == STATUS_FAILSAFE) {
+            IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, 0xFFFF); // All on
+        }
+    }
+}
+
+/* Frequency Analyzer Task */
+static void vFrequencyAnalyzerTask(void *pvParameters) {
+    TickType_t xLastWakeTime;
+    double new_freq;
+    FrequencyData_t local_freq_data;
+
+    /* Initialize the xLastWakeTime variable with the current time */
+    xLastWakeTime = xTaskGetTickCount();
+
+    /* Initialize local frequency data */
+    local_freq_data.current_freq = NOMINAL_FREQ;
+    local_freq_data.prev_freq = NOMINAL_FREQ;
+    local_freq_data.roc = 0.0;
+    local_freq_data.upper_limit = NOMINAL_FREQ + FREQ_TOLERANCE;
+    local_freq_data.lower_limit = NOMINAL_FREQ - FREQ_TOLERANCE;
+    local_freq_data.is_stable = 1;
+
+    for (;;) {
+        /* Wait for the next cycle */
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(FREQ_ANALYZER_PERIOD_MS));
+
+        /* Check for new frequency data from ISR */
+        if (xQueueReceive(xFreqDataQueue, &new_freq, 0) == pdTRUE) {
+            /* Store previous frequency for calculation */
+            local_freq_data.prev_freq = local_freq_data.current_freq;
+            local_freq_data.current_freq = new_freq;
+
+            /* Calculate rate of change in Hz/s */
+            local_freq_data.roc = (local_freq_data.current_freq - local_freq_data.prev_freq) *
+                                  (1000.0 / FREQ_ANALYZER_PERIOD_MS);
+
+            /* Check stability criteria */
+            local_freq_data.is_stable = (local_freq_data.current_freq >= local_freq_data.lower_limit &&
+                                         local_freq_data.current_freq <= local_freq_data.upper_limit &&
+                                         fabs(local_freq_data.roc) < MAX_FREQ_ROC);
+
+            /* Update global frequency data */
+            if (xSemaphoreTake(xConfigRegsMutex, portMAX_DELAY) == pdTRUE) {
+                memcpy(&gFrequencyData, &local_freq_data, sizeof(FrequencyData_t));
+                xSemaphoreGive(xConfigRegsMutex);
+            }
+
+            /* Send to results queue for other tasks */
+            xQueueSend(xFreqResultQueue, &local_freq_data, 0);
+        }
+    }
+}
+
+/* Load Decision Function */
+static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoadDecision) {
+    int i;
+    uint8_t load_mask = LOAD_PRIORITY_MASK; // Default is all loads on
+
+    /* Default is all loads on */
+    for (i = 0; i < 7; i++) {
+        pxLoadDecision->requested_status[i] = 1;
+    }
+
+    /* Check if frequency is below acceptable limits */
+    if (!pxFreqData->is_stable) {
+        if (pxFreqData->current_freq < pxFreqData->lower_limit) {
+            /* Shed loads based on severity */
+            double deviation = pxFreqData->lower_limit - pxFreqData->current_freq;
+
+            if (deviation > 2.0) {
+                /* Severe under-frequency - keep only critical loads */
+                load_mask = LOAD_PRIORITY_1;
+            } else if (deviation > 1.0) {
+                /* Moderate under-frequency - keep critical and high priority */
+                load_mask = LOAD_PRIORITY_1 | LOAD_PRIORITY_2;
+            } else {
+                /* Minor under-frequency - shed only low priority loads */
+                load_mask = LOAD_PRIORITY_1 | LOAD_PRIORITY_2 | LOAD_PRIORITY_3;
+            }
+        } else if (pxFreqData->current_freq > pxFreqData->upper_limit) {
+            /* Over-frequency condition - we could implement a different response if needed */
+            load_mask = LOAD_PRIORITY_MASK;
+        }
+
+        /* Check rate of change for rapid response */
+        if (fabs(pxFreqData->roc) > MAX_FREQ_ROC) {
+            /* Rate of change too high, shed more loads */
+            load_mask &= (LOAD_PRIORITY_1 | LOAD_PRIORITY_2);
+        }
+
+        /* Apply load mask to individual loads based on priority */
+        for (i = 0; i < 7; i++) {
+            if (i == 0) { // Load 0 is critical (PRIORITY_1)
+                pxLoadDecision->requested_status[i] = (load_mask & LOAD_PRIORITY_1) ? 1 : 0;
+            } else if (i <= 2) { // Loads 1-2 are high priority (PRIORITY_2)
+                pxLoadDecision->requested_status[i] = (load_mask & LOAD_PRIORITY_2) ? 1 : 0;
+            } else if (i <= 4) { // Loads 3-4 are medium priority (PRIORITY_3)
+                pxLoadDecision->requested_status[i] = (load_mask & LOAD_PRIORITY_3) ? 1 : 0;
+            } else { // Loads 5-6 are low priority (PRIORITY_4)
+                pxLoadDecision->requested_status[i] = (load_mask & LOAD_PRIORITY_4) ? 1 : 0;
+            }
+        }
+    }
+
+    /* Override with failsafe settings if active */
+    if (gSystemStatus.failsafe_active) {
+        for (i = 0; i < 7; i++) {
+            if (i == 0) { // Only keep critical load
+                pxLoadDecision->requested_status[i] = 1;
+            } else {
+                pxLoadDecision->requested_status[i] = 0;
+            }
+        }
+    }
+}
+
+/* Function to check if actuator status matches load decision */
+static uint8_t vCheckActuatorStatus(LoadDecision_t *pxLoadDecision, Actuator_t *pxActuator) {
+    int i;
+    uint8_t mismatch = 0;
+
+    /* Compare each load's requested status with actual actuator status */
+    for (i = 0; i < 7; i++) {
+        if (pxLoadDecision->requested_status[i] != pxActuator->actuator_status[i]) {
+            mismatch = 1;
+            break;
+        }
+    }
+
+    return mismatch ? FAULT_DETECTED : FAULT_NONE;
+}
+
+/* Load Actuator Task */
+static void vLoadActuatorTask(void *pvParameters) {
+    TickType_t xLastWakeTime;
+    FrequencyData_t local_freq_data;
+    LoadDecision_t local_load_decision;
+    Actuator_t local_actuator;
+    uint8_t load_outputs = 0;
+    int i;
+    uint8_t previous_outputs[7] = {1, 1, 1, 1, 1, 1, 1}; // All loads on initially
+
+    /* Initialize the xLastWakeTime variable with the current time */
+    xLastWakeTime = xTaskGetTickCount();
+
+    for (;;) {
+        /* Wait for the next cycle */
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(LOAD_ACTUATOR_PERIOD_MS));
+
+        /* Get latest frequency analysis result */
+        if (xQueuePeek(xFreqResultQueue, &local_freq_data, 0) == pdTRUE) {
+            /* Get current load decision state */
+            if (xSemaphoreTake(xShedRegsMutex, portMAX_DELAY) == pdTRUE) {
+                memcpy(&local_load_decision, &gLoadDecision, sizeof(LoadDecision_t));
+                xSemaphoreGive(xShedRegsMutex);
+            }
+
+            /* Make load shedding decision */
+            vMakeLoadDecision(&local_freq_data, &local_load_decision);
+
+            /* Update global load decision if changed */
+            if (memcmp(local_load_decision.requested_status, gLoadDecision.requested_status, 7) != 0) {
+                if (xSemaphoreTake(xShedRegsMutex, portMAX_DELAY) == pdTRUE) {
+                    memcpy(gLoadDecision.requested_status, local_load_decision.requested_status, 7);
+                    xSemaphoreGive(xShedRegsMutex);
+                }
+            }
+        }
+
+        /* Check for manual override */
+        if (!gSystemStatus.override_active) {
+            /* Apply load control if not in override mode */
+            if (xSemaphoreTake(xActuatorStatusMutex, portMAX_DELAY) == pdTRUE) {
+                /* Copy the requested status to load status */
+                memcpy(gLoadDecision.load_status, gLoadDecision.requested_status, 7);
+
+                /* Convert load status array to output bits for LEDs */
+                load_outputs = 0;
+                for (i = 0; i < 7; i++) {
+                    if (gLoadDecision.load_status[i]) {
+                        load_outputs |= (1 << i);
+                    }
+                }
+
+                /* Only update hardware if status has changed */
+                if (memcmp(previous_outputs, gLoadDecision.load_status, 7) != 0) {
+                    IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, load_outputs);
+                    memcpy(previous_outputs, gLoadDecision.load_status, 7);
+                }
+
+                /* Simulate actuator response (in real hardware this would be read from sensors) */
+                /* This would read from actual hardware to get actuator states */
+                /* For this simulation, we'll just create a random mismatch occasionally */
+                if (rand() % 100 < 2) { // 2% chance of random actuator failure
+                    int failed_actuator = rand() % 7;
+                    gActuator.actuator_status[failed_actuator] = !gLoadDecision.requested_status[failed_actuator];
+                } else {
+                    /* Normal case: actuators follow the requested status */
+                    for (i = 0; i < 7; i++) {
+                        gActuator.actuator_status[i] = gLoadDecision.requested_status[i];
+                    }
+                }
+
+                xSemaphoreGive(xActuatorStatusMutex);
+            }
+        }
+    }
+}
+
+/* Initialize VGA display */
+static void vInitializeVGA(void) {
+    /* Initialize pixel buffer */
+    pixel_buf = alt_up_pixel_buffer_dma_open_dev(VIDEO_PIXEL_BUFFER_DMA_NAME);
+    if (pixel_buf == NULL) {
+        printf("Cannot find pixel buffer device\n");
+    }
+    alt_up_pixel_buffer_dma_clear_screen(pixel_buf, 0);
+
+    /* Initialize character buffer */
+    char_buf = alt_up_char_buffer_open_dev("/dev/video_character_buffer_with_dma");
+    if (char_buf == NULL) {
+        printf("Cannot find character buffer device\n");
+    }
+    alt_up_char_buffer_clear(char_buf);
+
+    /* Draw frequency plot axes and labels */
+    alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 100, 590, 200, 0xFFFF, 0);
+    alt_up_pixel_buffer_dma_draw_vline(pixel_buf, 100, 50, 200, 0xFFFF, 0);
+
+    /* Draw RoC plot axes */
+    alt_up_pixel_buffer_dma_draw_hline(pixel_buf, 100, 590, 300, 0xFFFF, 0);
+    alt_up_pixel_buffer_dma_draw_vline(pixel_buf, 100, 220, 300, 0xFFFF, 0);
+
+    /* Add labels */
+    alt_up_char_buffer_string(char_buf, "Frequency (Hz)", 4, 4);
+    alt_up_char_buffer_string(char_buf, "52", 10, 7);
+    alt_up_char_buffer_string(char_buf, "50", 10, 12);
+    alt_up_char_buffer_string(char_buf, "48", 10, 17);
+    alt_up_char_buffer_string(char_buf, "46", 10, 22);
+
+    alt_up_char_buffer_string(char_buf, "df/dt (Hz/s)", 4, 26);
+    alt_up_char_buffer_string(char_buf, "60", 10, 28);
+    alt_up_char_buffer_string(char_buf, "30", 10, 30);
+    alt_up_char_buffer_string(char_buf, "0", 10, 32);
+    alt_up_char_buffer_string(char_buf, "-30", 9, 34);
+    alt_up_char_buffer_string(char_buf, "-60", 9, 36);
+}
+
+/* Draw frequency plots */
+static void vDrawFrequencyPlot(double *freq, double *dfreq, int oldest_idx) {
+    int i, j;
+    Line line_freq, line_roc;
+    char status_text[40];
+    uint8_t loads_status = 0;
+    int k;
+
+    /* Clear old plots */
+    alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 0, 639, 199, 0, 0);
+    alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 201, 639, 299, 0, 0);
+
+    /* Draw new plots */
+    for (j = 0; j < 99; ++j) {
+        i = (oldest_idx + j) % 100;
+        int next_i = (oldest_idx + j + 1) % 100;
+
+        if ((freq[i] > MIN_FREQ) && (freq[next_i] > MIN_FREQ)) {
+            /* Frequency plot */
+            line_freq.x1 = FREQPLT_ORI_X + FREQPLT_GRID_SIZE_X * j;
+            line_freq.y1 = (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq[i] - MIN_FREQ));
+
+            line_freq.x2 = FREQPLT_ORI_X + FREQPLT_GRID_SIZE_X * (j + 1);
+            line_freq.y2 = (int)(FREQPLT_ORI_Y - FREQPLT_FREQ_RES * (freq[next_i] - MIN_FREQ));
+
+            /* RoC plot */
+            line_roc.x1 = ROCPLT_ORI_X + ROCPLT_GRID_SIZE_X * j;
+            line_roc.y1 = (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * dfreq[i]);
+
+            line_roc.x2 = ROCPLT_ORI_X + ROCPLT_GRID_SIZE_X * (j + 1);
+            line_roc.y2 = (int)(ROCPLT_ORI_Y - ROCPLT_ROC_RES * dfreq[next_i]);
+
+            /* Draw lines */
+            alt_up_pixel_buffer_dma_draw_line(pixel_buf, line_freq.x1, line_freq.y1,
+                                             line_freq.x2, line_freq.y2, 0x3ff << 0, 0);
+            alt_up_pixel_buffer_dma_draw_line(pixel_buf, line_roc.x1, line_roc.y1,
+                                             line_roc.x2, line_roc.y2, 0x3ff << 0, 0);
+        }
+    }
+
+    /* Convert load status array to bitfield for display */
+    loads_status = 0;
+    for (k = 0; k < 7; k++) {
+        if (gLoadDecision.load_status[k]) {
+            loads_status |= (1 << k);
+        }
+    }
+
+    /* Update status text */
+    sprintf(status_text, "Frequency: %.2f Hz   ", gFrequencyData.current_freq);
+    alt_up_char_buffer_string(char_buf, status_text, 40, 4);
+
+    sprintf(status_text, "RoC: %.2f Hz/s   ", gFrequencyData.roc);
+    alt_up_char_buffer_string(char_buf, status_text, 40, 6);
+
+    /* System status */
+    if (gSystemStatus.system_state == STATUS_NORMAL) {
+        alt_up_char_buffer_string(char_buf, "Status: NORMAL   ", 40, 8);
+    } else if (gSystemStatus.system_state == STATUS_ALERT) {
+        alt_up_char_buffer_string(char_buf, "Status: ALERT    ", 40, 8);
+    } else if (gSystemStatus.system_state == STATUS_FAILSAFE) {
+        alt_up_char_buffer_string(char_buf, "Status: FAILSAFE ", 40, 8);
+    }
+
+    /* Load status */
+    sprintf(status_text, "Loads: %02X   ", loads_status);
+    alt_up_char_buffer_string(char_buf, status_text, 40, 10);
+
+    /* Actuator fault status */
+    if (gActuator.system_fault == FAULT_DETECTED) {
+        alt_up_char_buffer_string(char_buf, "ACTUATOR FAULT DETECTED!", 40, 12);
+    } else {
+        alt_up_char_buffer_string(char_buf, "Actuators normal        ", 40, 12);
+    }
+}
+/* Manual Override Task */
+static void vManualOverrideTask(void *pvParameters) {
+    TickType_t xLastWakeTime;
+    uint16_t slider_value, prev_slider_value = 0;
+
+    /* Initialize the xLastWakeTime variable with the current time */
+    xLastWakeTime = xTaskGetTickCount();
+
+    for (;;) {
+        /* Wait for the next cycle */
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(MANUAL_OVERRIDE_PERIOD_MS));
+
+        /* Read slider switch values */
+        slider_value = IORD_ALTERA_AVALON_PIO_DATA(SLIDE_SWITCH_BASE);
+
+        /* Check if value changed */
+        if (slider_value != prev_slider_value) {
+            prev_slider_value = slider_value;
+
+            /* Check if override is active (MSB of slider) */
+            if (slider_value & 0x8000) {
+                /* Override is active - update system status */
+                gSystemStatus.override_active = 1;
+
+                /* Directly control loads based on other slider switches */
+                if (xSemaphoreTake(xActuatorStatusMutex, portMAX_DELAY) == pdTRUE) {
+                    /* Map slider switches to loads (use lower 4 bits) */
+                    gLoadDecision.load_status = (slider_value & 0x000F);
+                    IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, gLoadDecision.load_status);
+                    xSemaphoreGive(xActuatorStatusMutex);
+                }
+            } else {
+                /* Override is inactive */
+                gSystemStatus.override_active = 0;
+            }
+        }
+    }
+}
+
+/* VGA Display Task */
+static void vVGADisplayTask(void *pvParameters) {
+    TickType_t xLastWakeTime;
+    double freq_history[100], dfreq_history[100];
+    int i, oldest_idx = 0;
+
+    /* Initialize the xLastWakeTime variable with the current time */
+    xLastWakeTime = xTaskGetTickCount();
+
+    /* Initialize VGA display */
+    vInitializeVGA();
+
+    /* Initialize history arrays */
+    for (i = 0; i < 100; i++) {
+        freq_history[i] = NOMINAL_FREQ;
+        dfreq_history[i] = 0.0;
+    }
+
+    for (;;) {
+        /* Wait for the next cycle */
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(VGA_DISPLAY_PERIOD_MS));
+
+        /* Copy latest frequency data */
+        if (xSemaphoreTake(xConfigRegsMutex, portMAX_DELAY) == pdTRUE) {
+            freq_history[oldest_idx] = gFrequencyData.current_freq;
+            dfreq_history[oldest_idx] = gFrequencyData.roc;
+            xSemaphoreGive(xConfigRegsMutex);
+
+            /* Move to next position in circular buffer */
+            oldest_idx = (oldest_idx + 1) % 100;
+        }
+
+        /* Draw the frequency and RoC plots */
+        vDrawFrequencyPlot(freq_history, dfreq_history, oldest_idx);
+    }
+}
+
+
+/*-----------------------------------------------------------*/
+/* Main Function */
+
+int main(void) {
+    int i;
+
+    /* Initialize hardware components */
+
+    /* Set up keyboard/push button interrupts */
+    IOWR_ALTERA_AVALON_PIO_IRQ_MASK(PUSH_BUTTON_BASE, 0x7);
+    IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
+    alt_irq_register(PUSH_BUTTON_IRQ, NULL, vKeyboardISRHandler);
+
+    /* Set up frequency analyzer interrupt */
+    alt_irq_register(FREQUENCY_ANALYSER_IRQ, NULL, vFrequencyISRHandler);
+
+    /* Initialize default system status */
+    gSystemStatus.system_state = STATUS_NORMAL;
+    gSystemStatus.alert_active = 0;
+    gSystemStatus.failsafe_active = 0;
+    gSystemStatus.override_active = 0;
+
+    /* Initialize frequency data with defaults */
+    gFrequencyData.current_freq = NOMINAL_FREQ;
+    gFrequencyData.prev_freq = NOMINAL_FREQ;
+    gFrequencyData.roc = 0.0;
+    gFrequencyData.upper_limit = NOMINAL_FREQ + FREQ_TOLERANCE;
+    gFrequencyData.lower_limit = NOMINAL_FREQ - FREQ_TOLERANCE;
+    gFrequencyData.is_stable = 1;
+
+    /* Initialize load decision data */
+    for (i = 0; i < 7; i++) {
+        gLoadDecision.load_status[i] = 1;         /* All loads on initially */
+        gLoadDecision.requested_status[i] = 1;    /* All loads requested to be on */
+        gActuator.actuator_status[i] = 1;         /* All actuators connected initially */
+    }
+    gLoadDecision.priority_mask = LOAD_PRIORITY_MASK;  /* All loads controlled */
+    gActuator.system_fault = FAULT_NONE;               /* No fault initially */
+    gActuator.priority_mask = LOAD_PRIORITY_MASK;      /* Actuator priority matches decision */
+
+    /* Create mutexes for shared data protection */
+    xConfigRegsMutex = xSemaphoreCreateMutex();
+    xActuatorStatusMutex = xSemaphoreCreateMutex();
+    xShedRegsMutex = xSemaphoreCreateMutex();
+
+    /* Create queues for inter-task communication */
+    xFreqDataQueue = xQueueCreate(10, sizeof(double));         /* Raw frequency values from ISR */
+    xFreqResultQueue = xQueueCreate(2, sizeof(FrequencyData_t)); /* Processed frequency data */
+
+    /* Create the tasks */
+    xTaskCreate(vSystemMonitorTask, "SysMonitor", TASK_STACKSIZE,
+               NULL, SYSTEM_MONITOR_PRIORITY, &xSystemMonitorTask);
+
+    xTaskCreate(vFrequencyAnalyzerTask, "FreqAnalyzer", TASK_STACKSIZE,
+               NULL, FREQ_ANALYZER_PRIORITY, &xFreqAnalyzerTask);
+
+    xTaskCreate(vLoadActuatorTask, "LoadAct", TASK_STACKSIZE,
+               NULL, LOAD_ACTUATOR_PRIORITY, &xLoadActuatorTask);
+
+    xTaskCreate(vVGADisplayTask, "VGADisplay", TASK_STACKSIZE,
+               NULL, VGA_DISPLAY_PRIORITY, &xVGADisplayTask);
+
+    xTaskCreate(vManualOverrideTask, "Override", TASK_STACKSIZE,
+               NULL, MANUAL_OVERRIDE_PRIORITY, &xManualOverrideTask);
+
+    /* Initial LED setup - all on to show system is starting */
+    IOWR_ALTERA_AVALON_PIO_DATA(RED_LEDS_BASE, 0xFFFF);
+    IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, 0xFF);
+
+    printf("Load Management System Starting...\n");
+    printf("Nominal Frequency: %.1f Hz (± %.1f Hz)\n", NOMINAL_FREQ, FREQ_TOLERANCE);
+    printf("Task Priorities: Monitor=%d, Analyzer=%d, Actuator=%d, Display=%d, Override=%d\n",
+           SYSTEM_MONITOR_PRIORITY, FREQ_ANALYZER_PRIORITY, LOAD_ACTUATOR_PRIORITY,
+           VGA_DISPLAY_PRIORITY, MANUAL_OVERRIDE_PRIORITY);
+    printf("System Ready. Starting scheduler.\n\n");
+
+    /* Start the scheduler */
+    vTaskStartScheduler();
+
+    /* Should never reach here unless there's not enough heap memory */
+    printf("ERROR: Insufficient heap memory to start scheduler!\n");
+
+    for(;;);
+    return 0;
+}
