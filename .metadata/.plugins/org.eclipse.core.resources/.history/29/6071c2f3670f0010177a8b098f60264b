@@ -188,7 +188,7 @@ static void vKeyboardISRHandler(void* context) {
 /* System Reset ISR Handler */
 static void vSystemResetISRHandler(void* context) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-   // int i;
+    int i;
 
     /* Clear the interrupt */
     IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);

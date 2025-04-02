@@ -183,12 +183,10 @@ static void vKeyboardISRHandler(void* context) {
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-
-// system reset should be configured as a hardware interrupt callback
 /* System Reset ISR Handler */
 static void vSystemResetISRHandler(void* context) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-   // int i;
+    int i;
 
     /* Clear the interrupt */
     IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
@@ -234,7 +232,6 @@ static void vFrequencyISRHandler(void* context) {
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-// TODO load decison should call this ISR when new decison has been made
 /* Shedding ISR Handler */
 static void vShedISRHandler(void* context) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -245,11 +242,11 @@ static void vShedISRHandler(void* context) {
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-// TODO failsafe ISR should be called immediately once system failure detected
 /* Failsafe ISR Handler */
 static void vFailSafeISRHandler(void* context) {
-    // emergency disconnection. Cut-off everything.
+	// emergency disconnection. Cut-off everything.
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    int i;
 
     /* Immediately activate failsafe mode */
     gSystemStatus.failsafe_active = 1;
@@ -257,13 +254,15 @@ static void vFailSafeISRHandler(void* context) {
 
     /* Turn off non-critical loads immediately */
     if (xSemaphoreTakeFromISR(xActuatorStatusMutex, &xHigherPriorityTaskWoken) == pdTRUE) {
-        /* Start with all loads disconnected */
-        gLoadDecision.load_status = 0x0000;
-        gLoadDecision.requested_status = 0x0000;
-
-        /* Keep only load 0 connected (critical) */
-        gLoadDecision.load_status |= LOAD_PRIORITY_1;
-        gLoadDecision.requested_status |= LOAD_PRIORITY_1;
+        /* Set all non-critical loads to disconnected */
+            /* Keep only load 0 connected (critical) */
+            if (i == 0) {
+                gLoadDecision.load_status= 0x0000;
+                gLoadDecision.requested_status = 0x0000;
+            } else {
+                gLoadDecision.load_status = 0x0000;
+                gLoadDecision.requested_status= 0x0000;
+            }
 
         /* Directly write to the load output - only critical loads (first load) */
         IOWR_ALTERA_AVALON_PIO_DATA(GREEN_LEDS_BASE, LOAD_PRIORITY_1);
@@ -448,19 +447,17 @@ static void vMakeLoadDecision(FrequencyData_t *pxFreqData, LoadDecision_t *pxLoa
 
 /* Function to check if actuator status matches load decision */
 static uint8_t vCheckActuatorStatus(LoadDecision_t *pxLoadDecision, Actuator_t *pxActuator) {
-  //  int i;
-    //uint8_t mismatch = 0;
+    int i;
+    uint8_t mismatch = 0;
 
-    // Redundant part
     /* Compare each load's requested status with actual actuator status */
-    /*
         if (pxLoadDecision->requested_status != pxActuator->actuator_status) {
             mismatch = 1;
-            return mismatch;	// Return immediately
+            break;
         }
-*/
 
-    return pxLoadDecision->requested_status != pxActuator->actuator_status ? FAULT_DETECTED : FAULT_NONE;
+
+    return mismatch ? FAULT_DETECTED : FAULT_NONE;
 }
 
 /* Load Actuator Task */
@@ -579,7 +576,7 @@ static void vDrawFrequencyPlot(double *freq, double *dfreq, int oldest_idx) {
     Line line_freq, line_roc;
     char status_text[40];
     uint8_t loads_status = 0;
-    //int k;
+    int k;
 
     /* Clear old plots */
     alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 0, 639, 199, 0, 0);
@@ -614,8 +611,12 @@ static void vDrawFrequencyPlot(double *freq, double *dfreq, int oldest_idx) {
     }
 
     /* Convert load status array to bitfield for display */
-    loads_status = gLoadDecision.load_status;
-
+    loads_status = 0;
+    for (k = 0; k < 7; k++) {
+        if (gLoadDecision.load_status[k]) {
+            loads_status |= (1 << k);
+        }
+    }
 
     /* Update status text */
     sprintf(status_text, "Frequency: %.2f Hz   ", gFrequencyData.current_freq);
@@ -725,7 +726,7 @@ static void vVGADisplayTask(void *pvParameters) {
 /* Main Function */
 
 int main(void) {
-   // int i;
+    int i;
 
     /* Initialize hardware components */
 
@@ -752,10 +753,11 @@ int main(void) {
     gFrequencyData.is_stable = 1;
 
     /* Initialize load decision data */
-        gLoadDecision.load_status = 0x0000;         /* All loads on initially */
-        gLoadDecision.requested_status = 0x0000;    /* All loads requested to be on */
-        gActuator.actuator_status = 0x0000;         /* All actuators connected initially */
-
+    for (i = 0; i < 7; i++) {
+        gLoadDecision.load_status[i] = 1;         /* All loads on initially */
+        gLoadDecision.requested_status[i] = 1;    /* All loads requested to be on */
+        gActuator.actuator_status[i] = 1;         /* All actuators connected initially */
+    }
     gLoadDecision.priority_mask = LOAD_PRIORITY_MASK;  /* All loads controlled */
     gActuator.system_fault = FAULT_NONE;               /* No fault initially */
     gActuator.priority_mask = LOAD_PRIORITY_MASK;      /* Actuator priority matches decision */

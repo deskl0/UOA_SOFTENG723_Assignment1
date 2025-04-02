@@ -183,12 +183,10 @@ static void vKeyboardISRHandler(void* context) {
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-
-// system reset should be configured as a hardware interrupt callback
 /* System Reset ISR Handler */
 static void vSystemResetISRHandler(void* context) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-   // int i;
+    int i;
 
     /* Clear the interrupt */
     IOWR_ALTERA_AVALON_PIO_EDGE_CAP(PUSH_BUTTON_BASE, 0x7);
@@ -579,7 +577,7 @@ static void vDrawFrequencyPlot(double *freq, double *dfreq, int oldest_idx) {
     Line line_freq, line_roc;
     char status_text[40];
     uint8_t loads_status = 0;
-    //int k;
+    int k;
 
     /* Clear old plots */
     alt_up_pixel_buffer_dma_draw_box(pixel_buf, 101, 0, 639, 199, 0, 0);
@@ -725,7 +723,7 @@ static void vVGADisplayTask(void *pvParameters) {
 /* Main Function */
 
 int main(void) {
-   // int i;
+    int i;
 
     /* Initialize hardware components */
 
